@@ -117,15 +117,10 @@ def mp3_download():
     link = entry3.get()
     yt = YouTube(link)
     stream = yt.streams.filter(only_audio=True).first()
-    out_file = stream.download(output_path="downloads")
-    new_file = "Downly downloads/" + entry4.get() + ".mp3"
-    
-    audio_clip = AudioFileClip(out_file)
-    audio_clip.write_audiofile(new_file)
-    audio_clip.close()
-    os.remove(out_file)
-    
-    if os.path.exists(new_file):
+    filename = entry4.get() + ".mp3"
+    stream.download(output_path="Downly downloads/", filename=filename)
+    file_path = "Downly downloads/" + filename
+    if os.path.exists(file_path):
         success()
     else:
         failed_download()

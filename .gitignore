@@ -1,0 +1,16 @@
+# Downloaded audio/video files
+downloads/
+"Downly downloads/"
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
