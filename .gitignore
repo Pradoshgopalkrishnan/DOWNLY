@@ -1,16 +1,25 @@
+youtube_cookies.txt
+*cookies*.txt
+ 
 # Downloaded audio/video files
 downloads/
-"Downly downloads/"
-
+Downly downloads/
+ 
 # Python
 __pycache__/
 *.pyc
 *.pyo
 .venv/
 venv/
-
+ 
 # IDE / OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+ 
+# Environment/secrets
+.env
+.env.*
+templates/
+

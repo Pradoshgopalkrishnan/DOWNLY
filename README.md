@@ -1,100 +1,79 @@
+# Downly — YouTube MP3 & MP4 Downloader
 
-# **Downly – YouTube MP3 & MP4 Downloader**
+A desktop application built with Python and Tkinter for downloading YouTube videos as MP4 or extracting audio as MP3. Uses `yt-dlp` for extraction and `FFmpeg` for muxing/audio conversion.
 
-Downly is a simple, user-friendly desktop application built using **Python** and **Tkinter** that allows you to download YouTube videos in **MP4** format or extract **MP3** audio with ease.
-The application uses **pytubefix** for fetching YouTube content and **moviepy** for audio conversion.
+## Features
 
----
+- Download YouTube videos in MP4, up to 1080p (falls back to 720p if unavailable)
+- Extract audio as MP3 (192kbps)
+- Tkinter GUI with basic error handling
+- Chunked, concurrent downloads to avoid connection-level throttling
+- Output saved to `Downly downloads/`
 
-## 🚀 **Features**
+## Requirements
 
-* Download YouTube videos in **high-resolution MP4**
-* Convert YouTube videos to **MP3 audio**
-* Simple & clean GUI using Tkinter
-* Error-handling for invalid downloads
-* Organized output folder:
-  → All files saved into **Downly downloads/**
-
----
-
-## 📦 **Requirements**
-
-Make sure you have the following packages installed:
+### Python packages
 
 ```
-pip install pytubefix
-pip install moviepy
+pip install -r requirements.txt
 ```
 
-Tkinter comes preinstalled with most Python distributions.
+### External dependencies (not installed via pip)
 
----
+**FFmpeg** — required for muxing video/audio streams and for MP3 extraction. Update `ffmpeg_location` in `1.py` to point at your local FFmpeg `bin` directory.
 
-## 📁 **Project Structure**
+**A JavaScript runtime** — YouTube obfuscates media URLs with JS that yt-dlp needs to execute. [Deno](https://deno.com/) is recommended:
+
+```
+winget install DenoLand.Deno
+```
+
+**YouTube cookies file** — recommended to avoid bot-detection and rate-limiting. Export cookies scoped to `youtube.com` only (not a whole-browser export) using an extension such as "Get cookies.txt LOCALLY" while logged into YouTube. Point `cookiefile` in `1.py` to the exported file's path.
+
+Do not commit your cookies file. It contains live session tokens equivalent to a password. `.gitignore` in this repo excludes `*cookies*.txt` by default.
+
+## Project structure
 
 ```
 Downly/
-│
-├── DOWNLY SOURCE CODE.py
-├── Downly downloads/   (auto-created)
+├── 1.py
+├── requirements.txt
+├── .gitignore
+└── Downly downloads/   (auto-created, git-ignored)
 ```
 
----
+## How it works
 
-## 🛠️ **How It Works**
+### MP4
 
-### **MP4 Download**
+1. User provides a URL and output filename
+2. yt-dlp fetches the best available video (<=1080p) and audio streams separately
+3. FFmpeg merges them into a single `.mp4` in `Downly downloads/`
 
-1. User enters a YouTube link
-2. Provides desired file name
-3. Downly fetches the video in highest resolution
-4. Saves to *Downly downloads/* with `.mp4` extension
+### MP3
 
-### **MP3 Download**
+1. User provides a URL and output filename
+2. yt-dlp extracts the best available audio stream
+3. FFmpeg converts it to `.mp3` in `Downly downloads/`
 
-1. User enters a YouTube link
-2. Provides desired MP3 file name
-3. Extracts audio from the video using moviepy
-4. Saves audio into *Downly downloads/* with `.mp3`
-
----
-
-## ▶️ **Running the Application**
-
-Run the program:
+## Running
 
 ```
-python "DOWNLY SOURCE CODE.py"
+python 1.py
 ```
 
-The GUI will launch with the main menu where you can select:
+Launches the GUI with MP3/MP4 selection on the main menu.
 
-* **MP3 Downloader**
-* **MP4 Downloader**
+## Notes
 
----
+- `Downly downloads/` is created automatically if it doesn't exist
+- Avoid special characters in filenames
+- YouTube's anti-automation measures change frequently — keep dependencies current:
 
-## 📸 **Screens & Navigation**
+```
+pip install -U yt-dlp yt-dlp-ejs
+```
 
-* Main Menu → MP3/MP4 selection
-* Input screen → URL + File name
-* Success / Failure Screen
-* Back to menu or Exit option
+## License
 
----
-
-## ⚠️ **Important Notes**
-
-* The folder **Downly downloads/** must exist in the same directory
-  (or will be created automatically by the script).
-* You must have a stable internet connection for downloading.
-* Avoid using special characters in file names.
-
----
-
-## 📜 **License**
-
-This project is free to use for personal, educational, and non-commercial purposes.
-
----
-
+Free to use for personal, educational, and non-commercial purposes.
