@@ -1,13 +1,12 @@
-#IMPORTING THE REQUIRED MODULES
+# IMPORTING THE REQUIRED MODULES
 from tkinter import *
-from pytubefix import YouTube
-from moviepy.audio.io.AudioFileClip import AudioFileClip
+import yt_dlp
 import os
 
-#INITIAL TKINTER FRAME
+# INITIAL TKINTER FRAME
 r = Tk()
 
-#FIRST FRAME/MENU FRAME
+# FIRST FRAME/MENU FRAME
 def hide_frames():
     """Hides all frames or widgets in the main window."""
     for frames in r.winfo_children():
@@ -23,12 +22,12 @@ def firstfunction():
     l.grid(row=0, column=0, columnspan=3, pady=(20, 10), padx=10, sticky="n")
 
     mp3_button = Button(menu_frame, text='MP3', padx=40, pady=20, fg='white', bg='#007ACC', font=("Arial", 14, "bold"),
-                    command=mp3_converter)
+                        command=mp3_converter)
     mp4_button = Button(menu_frame, text='MP4', padx=40, pady=20, fg='white', bg='#5F6368', font=("Arial", 14, "bold"),
-                    command=mp4_converter)
+                        command=mp4_converter)
     mp3_button.grid(row=1, column=0, padx=10, pady=10)
     mp4_button.grid(row=1, column=1, padx=10, pady=10)
-       
+
     r.grid_columnconfigure(0, weight=1)
     r.grid_columnconfigure(1, weight=1)
     r.grid_rowconfigure(1, weight=1)
@@ -47,7 +46,7 @@ def mp4_converter():
     back_button = Button(mp4_frame, text='back', padx=40, pady=15, bg='#6d7985', fg='white', command=firstfunction)
     ok_button = Button(mp4_frame, text='OK', padx=40, pady=15, fg='white', bg='#4285F4', font=("Arial", 14, "bold"),
                 command=mp4_download)
-    
+
     l.grid(row=0, column=0, pady=10, sticky="w")
     entry1.grid(row=1, column=0, pady=10, sticky="ew")
     l2.grid(row=2, column=0, pady=10, sticky="w")
@@ -57,17 +56,53 @@ def mp4_converter():
 
 def mp4_download():
     link = entry1.get()
-    yt = YouTube(link)
-    stream = yt.streams.get_highest_resolution()
-    filename = entry2.get() + ".mp4"
-    stream.download(output_path="Downly downloads/", filename=filename)
-    file_path = "Downly downloads/" + filename
+    filename = entry2.get()
 
-    if os.path.exists(file_path):
-        success()
-    else:
+    ydl_opts = {
+        'format': (
+            'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/'
+            'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/'
+            'best[height<=1080][ext=mp4]/'
+            'best[height<=720][ext=mp4]/'
+            'best'
+        ),
+        'outtmpl': f'Downly downloads/{filename}.%(ext)s',
+        'merge_output_format': 'mp4',
+        'ffmpeg_location': r'C:\Users\HP\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.1-full_build\bin',
+
+        # Real YouTube login cookies (SID/APISID/LOGIN_INFO etc.),
+        # exported for youtube.com only — never the whole browser.
+        'cookiefile': r'C:\Users\HP\Downloads\youtube_cookies.txt',
+
+        # Allows yt-dlp to fetch the JS challenge solver component
+        # required to decode YouTube's obfuscated media URLs.
+        'remote_components': ['ejs:github'],
+
+        # Splits long continuous streams into range-request chunks
+        # so a single connection doesn't get progressively throttled.
+        'http_chunk_size': 10 * 1024 * 1024,
+
+        # Fetches multiple DASH fragments in parallel instead of
+        # yt-dlp's slow default sequential fragment downloading.
+        'concurrent_fragment_downloads': 5,
+
+        'socket_timeout': 10,
+        'retries': 15,
+        'fragment_retries': 15,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([link])
+
+        file_path = f"Downly downloads/{filename}.mp4"
+        if os.path.exists(file_path):
+            success()
+        else:
+            failed_download()
+    except Exception as e:
+        print(f"Error downloading MP4: {e}")
         failed_download()
-    
+
 def success():
     hide_frames()
     global success_frame
@@ -105,7 +140,7 @@ def mp3_converter():
     back_button = Button(mp3_frame, text='back', padx=40, pady=15, bg='#6d7985', fg='white', command=firstfunction)
     ok_button = Button(mp3_frame, text='OK', padx=40, pady=15, fg='white', bg='#4285F4', font=("Arial", 14, "bold"),
                 command=mp3_download)
-    
+
     l.grid(row=0, column=0, pady=10, sticky="w")
     entry3.grid(row=1, column=0, pady=10, sticky="ew")
     l2.grid(row=2, column=0, pady=10, sticky="w")
@@ -115,15 +150,39 @@ def mp3_converter():
 
 def mp3_download():
     link = entry3.get()
-    yt = YouTube(link)
-    stream = yt.streams.filter(only_audio=True).first()
-    filename = entry4.get() + ".mp3"
-    stream.download(output_path="Downly downloads/", filename=filename)
-    file_path = "Downly downloads/" + filename
-    if os.path.exists(file_path):
-        success()
-    else:
+    filename = entry4.get()
+
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': f'Downly downloads/{filename}.%(ext)s',
+        'ffmpeg_location': r'C:\Users\HP\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.1-full_build\bin',
+        'cookiefile': r'C:\Users\HP\Downloads\youtube_cookies.txt',
+        'remote_components': ['ejs:github'],
+        'retries': 15,
+        'fragment_retries': 15,
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([link])
+
+        file_path = f"Downly downloads/{filename}.mp3"
+        if os.path.exists(file_path):
+            success()
+        else:
+            failed_download()
+    except Exception as e:
+        print(f"Error downloading MP3: {e}")
         failed_download()
+
+# Ensure the download directory exists before the app starts
+if not os.path.exists("Downly downloads"):
+    os.makedirs("Downly downloads")
 
 firstfunction()
 r.mainloop()
