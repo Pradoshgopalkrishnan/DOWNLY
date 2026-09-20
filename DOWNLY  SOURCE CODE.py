@@ -32,17 +32,53 @@ def firstfunction():
     r.grid_columnconfigure(1, weight=1)
     r.grid_rowconfigure(1, weight=1)
 
+# Quality options shown to the user, mapped to a max height.
+# "Best available" means no height cap at all (true best stream yt-dlp can find).
+QUALITY_OPTIONS = {
+    '1080p': 1080,
+    '720p': 720,
+    '480p': 480,
+    'Best available': None,
+}
+
+def build_mp4_format(quality_label):
+    """Builds the yt-dlp format selector string for the chosen quality."""
+    max_height = QUALITY_OPTIONS.get(quality_label)
+
+    if max_height is None:
+        # No cap — grab the actual best video+audio yt-dlp can find.
+        return (
+            'bestvideo[ext=mp4]+bestaudio[ext=m4a]/'
+            'best[ext=mp4]/'
+            'best'
+        )
+
+    # Capped at the requested height, with a fallback chain in case that
+    # exact combo isn't available for a given video.
+    return (
+        f'bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]/'
+        f'best[height<={max_height}][ext=mp4]/'
+        'best'
+    )
+
 def mp4_converter():
     global entry2
     global entry1
     global mp4_frame
+    global quality_var
     menu_frame.grid_forget()
     mp4_frame = Frame(r, bg="white")
     mp4_frame.grid(padx=20, pady=20, sticky="nsew")
     l = Label(mp4_frame, text='Enter the url', font=("Arial", 16, "bold"), bg="white", fg="black")
     l2 = Label(mp4_frame, text='Enter the file name for the video (mp4)', font=("Arial", 16, "bold"), bg="white", fg="black")
+    l3 = Label(mp4_frame, text='Select quality', font=("Arial", 16, "bold"), bg="white", fg="black")
     entry1 = Entry(mp4_frame, width=30, font=("Arial", 14))
     entry2 = Entry(mp4_frame, width=30, font=("Arial", 14))
+
+    quality_var = StringVar(value='1080p')
+    quality_menu = OptionMenu(mp4_frame, quality_var, *QUALITY_OPTIONS.keys())
+    quality_menu.config(font=("Arial", 14), width=15)
+
     back_button = Button(mp4_frame, text='back', padx=40, pady=15, bg='#6d7985', fg='white', command=firstfunction)
     ok_button = Button(mp4_frame, text='OK', padx=40, pady=15, fg='white', bg='#4285F4', font=("Arial", 14, "bold"),
                 command=mp4_download)
@@ -51,21 +87,18 @@ def mp4_converter():
     entry1.grid(row=1, column=0, pady=10, sticky="ew")
     l2.grid(row=2, column=0, pady=10, sticky="w")
     entry2.grid(row=3, column=0, pady=10, sticky="ew")
-    back_button.grid(row=4, column=0, pady=20, sticky="ew")
-    ok_button.grid(row=5, column=0, sticky='ew')
+    l3.grid(row=4, column=0, pady=10, sticky="w")
+    quality_menu.grid(row=5, column=0, pady=10, sticky="w")
+    back_button.grid(row=6, column=0, pady=20, sticky="ew")
+    ok_button.grid(row=7, column=0, sticky='ew')
 
 def mp4_download():
     link = entry1.get()
     filename = entry2.get()
+    quality_label = quality_var.get()
 
     ydl_opts = {
-        'format': (
-            'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/'
-            'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/'
-            'best[height<=1080][ext=mp4]/'
-            'best[height<=720][ext=mp4]/'
-            'best'
-        ),
+        'format': build_mp4_format(quality_label),
         'outtmpl': f'Downly downloads/{filename}.%(ext)s',
         'merge_output_format': 'mp4',
         'ffmpeg_location': r'C:\Users\HP\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.1-full_build\bin',
@@ -142,7 +175,7 @@ def mp3_converter():
                 command=mp3_download)
 
     l.grid(row=0, column=0, pady=10, sticky="w")
-    entry3.grid(row=1, column=0, pady=10, sticky="ew")
+    entry3.grid(row=1, column=0, pady=10, sticky="w")
     l2.grid(row=2, column=0, pady=10, sticky="w")
     entry4.grid(row=3, column=0, pady=10, sticky="ew")
     back_button.grid(row=4, column=0, pady=20, sticky="ew")

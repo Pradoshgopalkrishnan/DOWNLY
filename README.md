@@ -4,7 +4,7 @@ A desktop application built with Python and Tkinter for downloading YouTube vide
 
 ## Features
 
-- Download YouTube videos in MP4, up to 1080p (falls back to 720p if unavailable)
+- Download YouTube videos in MP4, with a quality picker (1080p, 720p, 480p, or best available)
 - Extract audio as MP3 (192kbps)
 - Tkinter GUI with basic error handling
 - Chunked, concurrent downloads to avoid connection-level throttling
@@ -20,15 +20,15 @@ pip install -r requirements.txt
 
 ### External dependencies (not installed via pip)
 
-**FFmpeg** — required for muxing video/audio streams and for MP3 extraction. Update `ffmpeg_location` in `1.py` to point at your local FFmpeg `bin` directory.
+FFmpeg — required for muxing video/audio streams and for MP3 extraction. Update `ffmpeg_location` in `1.py` to point at your local FFmpeg `bin` directory.
 
-**A JavaScript runtime** — YouTube obfuscates media URLs with JS that yt-dlp needs to execute. [Deno](https://deno.com/) is recommended:
+A JavaScript runtime — YouTube obfuscates media URLs with JS that yt-dlp needs to execute. [Deno](https://deno.com/) is recommended:
 
 ```
 winget install DenoLand.Deno
 ```
 
-**YouTube cookies file** — recommended to avoid bot-detection and rate-limiting. Export cookies scoped to `youtube.com` only (not a whole-browser export) using an extension such as "Get cookies.txt LOCALLY" while logged into YouTube. Point `cookiefile` in `1.py` to the exported file's path.
+YouTube cookies file — recommended to avoid bot-detection and rate-limiting. Export cookies scoped to `youtube.com` only (not a whole-browser export) using an extension such as "Get cookies.txt LOCALLY" while logged into YouTube. Point `cookiefile` in `1.py` to the exported file's path.
 
 Do not commit your cookies file. It contains live session tokens equivalent to a password. `.gitignore` in this repo excludes `*cookies*.txt` by default.
 
@@ -46,8 +46,8 @@ Downly/
 
 ### MP4
 
-1. User provides a URL and output filename
-2. yt-dlp fetches the best available video (<=1080p) and audio streams separately
+1. User provides a URL, output filename, and picks a quality (1080p, 720p, 480p, or best available)
+2. yt-dlp fetches video capped at the selected height (or uncapped for "best available") and audio streams separately
 3. FFmpeg merges them into a single `.mp4` in `Downly downloads/`
 
 ### MP3
@@ -59,7 +59,7 @@ Downly/
 ## Running
 
 ```
-python 1.py
+python DOWNLY  SOURCE CODE.py
 ```
 
 Launches the GUI with MP3/MP4 selection on the main menu.
