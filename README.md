@@ -9,6 +9,7 @@ A desktop application built with Python and Tkinter for downloading YouTube vide
 - Tkinter GUI with basic error handling
 - Chunked, concurrent downloads to avoid connection-level throttling
 - Output saved to `Downly downloads/`
+-Uses cookies from Youtube to avoid throttling
 
 ## Requirements
 
