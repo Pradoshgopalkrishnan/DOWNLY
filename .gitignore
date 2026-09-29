@@ -23,5 +23,6 @@ Thumbs.db
 .env.*
 templates/
 1.py
-2.py
+
+
 architecture.md
