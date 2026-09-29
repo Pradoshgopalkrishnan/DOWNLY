@@ -3,6 +3,7 @@ from tkinter import *
 from tkinter import ttk, messagebox, filedialog
 import yt_dlp
 from yt_dlp.utils import DownloadError
+import importlib.metadata
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import urllib.request
 
 
 if getattr(sys, 'frozen', False):
@@ -173,6 +175,55 @@ def open_folder(path):
         messagebox.showerror("Couldn't open folder", str(e))
 
 
+# --- LIBRARY UPDATE CHECK ---
+# PyPI names of the libraries worth keeping current. yt-dlp in particular breaks
+# whenever YouTube changes something, and the fix is almost always a new release.
+LIBRARIES_TO_CHECK = ('yt-dlp', 'yt-dlp-ejs')
+
+
+def _version_tuple(version):
+    """'2025.09.26' -> (2025, 9, 26). Works for yt-dlp's date versions and normal x.y.z ones."""
+    return tuple(int(part) for part in re.findall(r'\d+', version))
+
+
+def get_outdated_libraries():
+    """Compare installed versions against PyPI. Runs on a background thread.
+    Returns a list of (name, installed, latest). Fails quietly if offline."""
+    outdated = []
+    for name in LIBRARIES_TO_CHECK:
+        try:
+            installed = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            continue    # not installed (or not visible in a frozen build): nothing to compare
+        try:
+            with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/json", timeout=5) as resp:
+                latest = json.load(resp)["info"]["version"]
+        except (OSError, ValueError, KeyError):
+            continue    # offline or PyPI hiccup: skip silently, this is only a courtesy check
+        if _version_tuple(latest) > _version_tuple(installed):
+            outdated.append((name, installed, latest))
+    return outdated
+
+
+def _update_check_worker():
+    outdated = get_outdated_libraries()
+    if outdated:
+        r.after(0, show_update_notice, outdated)
+
+
+def show_update_notice(outdated):
+    """Main thread: build the notice text and show it on the menu screen."""
+    global UPDATE_NOTICE
+    details = ", ".join(f"{name} {installed} -> {latest}" for name, installed, latest in outdated)
+    if getattr(sys, 'frozen', False):
+        how = "Download a newer build of Downly to update."
+    else:
+        how = "Update with:  pip install -U " + " ".join(name for name, _, _ in outdated)
+    UPDATE_NOTICE = f"Updates available: {details}\n{how}"
+    if update_label is not None:
+        update_label.config(text=UPDATE_NOTICE)
+
+
 # --- FFMPEG DISCOVERY ---
 def find_ffmpeg():
     """Look for ffmpeg in the folder the user picked earlier, then ./ffmpeg
@@ -192,41 +243,16 @@ def find_ffmpeg():
 
 
 def ensure_ffmpeg():
-    """Make sure FFmpeg is available, offering to auto-install it if missing.
+    """Make sure FFmpeg is available, offering a file picker if it isn't.
     Returns True if FFmpeg can be used. Must be called from the main thread."""
     if find_ffmpeg():
         return True
 
-    # If the user is on Windows, offer the automated winget install
-    if sys.platform.startswith('win'):
-        wants_to_install = messagebox.askyesno(
-            "FFmpeg Missing",
-            "Downly needs FFmpeg to merge video and convert MP3s.\n\n"
-            "Would you like Downly to automatically install it now? (This will open a terminal window)."
-        )
-        
-        if wants_to_install:
-            try:
-                # 'start cmd /wait /c' opens a visible terminal window, runs the command, and waits for it to finish before closing
-                subprocess.run('start cmd /wait /c "winget install ffmpeg"', shell=True)
-                
-                # Check if the installation was successful and it's now on the PATH
-                if find_ffmpeg():
-                    messagebox.showinfo("Success", "FFmpeg installed successfully!")
-                    return True
-                else:
-                    messagebox.showwarning("Warning", "Install finished, but FFmpeg still wasn't found. You may need to restart Downly.")
-                    return False
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to run installer: {e}")
-                return False
-
-    # Fallback for Mac/Linux users, or if they clicked "No" to the auto-install
     wants_to_browse = messagebox.askyesno(
-        "Locate FFmpeg",
-        "Could not auto-install. Would you like to locate the ffmpeg folder yourself?"
+        "FFmpeg not found",
+        "Downly needs FFmpeg to merge video and convert audio, but couldn't find it.\n\n"
+        "Would you like to locate ffmpeg yourself now?"
     )
-    
     if not wants_to_browse:
         return False
 
@@ -234,14 +260,23 @@ def ensure_ffmpeg():
         title=f"Select {FFMPEG_EXE_NAME}",
         filetypes=[("FFmpeg", FFMPEG_EXE_NAME), ("All files", "*.*")],
     )
-    
     if not path:
         return False
 
+    if os.path.basename(path).lower() != FFMPEG_EXE_NAME:
+        messagebox.showerror("Wrong file", f"Please select the file named {FFMPEG_EXE_NAME}.")
+        return False
+
     folder = os.path.dirname(path)
+    if not os.path.isfile(os.path.join(folder, FFPROBE_EXE_NAME)):
+        messagebox.showwarning(
+            "ffprobe missing",
+            f"{FFPROBE_EXE_NAME} isn't in the same folder as {FFMPEG_EXE_NAME}. "
+            "MP3 conversion may fail. A full FFmpeg download includes both."
+        )
+
     SETTINGS['ffmpeg_dir'] = folder
     save_settings()
-    
     return find_ffmpeg() is not None
 
 
@@ -271,6 +306,10 @@ current_progress_bar = None
 current_percent_label = None
 current_status_label = None
 
+# Text of the library-update notice (empty until the background check finds something)
+UPDATE_NOTICE = ""
+update_label = None
+
 
 # --- INPUT VALIDATION ---
 def validate_download_inputs(link, filename):
@@ -297,7 +336,7 @@ def hide_frames():
 
 def firstfunction():
     hide_frames()
-    global menu_frame
+    global menu_frame, update_label
     menu_frame = Frame(r, bg="white")
     menu_frame.grid(sticky="nsew")
     r.title('Downly')
@@ -315,6 +354,10 @@ def firstfunction():
     exit_home_button = Button(menu_frame, text='Exit', padx=40, pady=12, fg='white', bg='#d9534f',
                               font=("Arial", 14, "bold"), command=r.destroy)
     exit_home_button.grid(row=2, column=0, columnspan=2, padx=10, pady=(10, 20), sticky="ew")
+
+    update_label = Label(menu_frame, text=UPDATE_NOTICE, font=("Arial", 10), bg="white", fg="#b36b00",
+                         justify=LEFT, wraplength=420)
+    update_label.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 10))
 
     r.grid_columnconfigure(0, weight=1)
     r.grid_columnconfigure(1, weight=1)
@@ -457,6 +500,11 @@ def _preflight_ok(link, filename):
     error = validate_download_inputs(link, filename)
     if error:
         current_status_label.config(text=error, fg='#d9534f')
+        return False
+    try:
+        os.makedirs(DOWNLOAD_DIR, exist_ok=True)    # recreate it if it was deleted while the app was open
+    except OSError as e:
+        current_status_label.config(text=f"Couldn't create the downloads folder:\n{DOWNLOAD_DIR}\n{e}", fg='#d9534f')
         return False
     if not ensure_ffmpeg():
         current_status_label.config(text="FFmpeg is required. Click OK to try again and locate it.", fg='#d9534f')
@@ -681,5 +729,6 @@ def failed_download():
 # --- STARTUP ---
 init_storage()          # finds a writable folder, or shows an error and exits
 firstfunction()
+threading.Thread(target=_update_check_worker, daemon=True).start()   # library version check
 r.after(300, ensure_ffmpeg)   # startup check: offer the file picker right away if FFmpeg is missing
 r.mainloop()
