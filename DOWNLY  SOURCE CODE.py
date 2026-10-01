@@ -6,6 +6,7 @@ from yt_dlp.utils import DownloadError
 import importlib.metadata
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -351,13 +352,17 @@ def firstfunction():
     mp3_button.grid(row=1, column=0, padx=10, pady=10)
     mp4_button.grid(row=1, column=1, padx=10, pady=10)
 
+    playlist_button = Button(menu_frame, text='Playlist', padx=40, pady=20, fg='white', bg='#2E8B57',
+                             font=("Arial", 14, "bold"), command=playlist_converter)
+    playlist_button.grid(row=2, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+
     exit_home_button = Button(menu_frame, text='Exit', padx=40, pady=12, fg='white', bg='#d9534f',
                               font=("Arial", 14, "bold"), command=r.destroy)
-    exit_home_button.grid(row=2, column=0, columnspan=2, padx=10, pady=(10, 20), sticky="ew")
+    exit_home_button.grid(row=3, column=0, columnspan=2, padx=10, pady=(10, 20), sticky="ew")
 
     update_label = Label(menu_frame, text=UPDATE_NOTICE, font=("Arial", 10), bg="white", fg="#b36b00",
                          justify=LEFT, wraplength=420)
-    update_label.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 10))
+    update_label.grid(row=4, column=0, columnspan=2, padx=10, pady=(0, 10))
 
     r.grid_columnconfigure(0, weight=1)
     r.grid_columnconfigure(1, weight=1)
@@ -381,7 +386,7 @@ def retry_download(link, filename, file_type, quality_label=None):
         mp3_download()
 
 
-def auth_required_screen(link, filename, file_type, quality_label=None):
+def auth_required_screen(link, filename, file_type, quality_label=None, on_saved=None):
     hide_frames()
     global auth_frame
     auth_frame = Frame(r, bg="white")
@@ -435,7 +440,10 @@ def auth_required_screen(link, filename, file_type, quality_label=None):
             error_label.config(text=f"Couldn't save the cookies file: {e}")
             return
 
-        retry_download(link, filename, file_type, quality_label)
+        if on_saved:
+            on_saved()      # e.g. the playlist screen reloads itself
+        else:
+            retry_download(link, filename, file_type, quality_label)
 
     select_button = Button(auth_frame, text='Select cookies file', padx=20, pady=10, fg='white', bg='#f0ad4e',
                            font=("Arial", 12, "bold"), command=choose_cookie_file)
@@ -612,6 +620,7 @@ def mp4_download():
 def _mp4_download_worker(link, filename, quality_label):
     ydl_opts = {
         **common_opts(),
+        'noplaylist': True,     # a link with &list=... downloads only that one video
         'format': build_mp4_format(quality_label),
         'outtmpl': os.path.join(DOWNLOAD_DIR, f'{filename}.%(ext)s'),
         'merge_output_format': 'mp4',
@@ -677,6 +686,7 @@ def mp3_download():
 def _mp3_download_worker(link, filename):
     ydl_opts = {
         **common_opts(),
+        'noplaylist': True,     # a link with &list=... downloads only that one video
         'format': 'bestaudio/best',
         'outtmpl': os.path.join(DOWNLOAD_DIR, f'{filename}.%(ext)s'),
         'retries': 15,
@@ -692,6 +702,446 @@ def _mp3_download_worker(link, filename):
         link, filename, ydl_opts, 'mp3',
         on_auth_error=lambda: auth_required_screen(link, filename, 'mp3'),
     )
+
+
+# --- PLAYLIST DOWNLOADS ---
+PLAYLIST_PAUSE_RANGE = (3, 8)       # seconds to wait between lectures, to stay under YouTube's rate limit
+MAX_FOLDER_NAME_LEN = 80            # keeps folder + file paths under Windows' path length limit
+MAX_LECTURE_NAME_LEN = 100
+
+# Raised from the progress hook to abort the current download when the user clicks Cancel
+CancelledDownload = getattr(yt_dlp.utils, 'DownloadCancelled', RuntimeError)
+
+pl_cancel_event = threading.Event()
+pl_title = ""
+pl_entries = []                     # [(position in playlist, title, url), ...]
+pl_frame = None
+pl_select_frame = None
+pl_url_entry = None
+pl_load_button = None
+pl_back_button = None
+pl_status_label = None
+pl_listbox = None
+pl_type_var = None
+pl_quality_var = None
+pl_download_button = None
+pl_cancel_button = None
+pl_overall_label = None
+pl_progress = None
+pl_percent_label = None
+
+
+def _short_name(name, limit):
+    """sanitize_filename() plus a shorter length limit for playlist folder and lecture names."""
+    return sanitize_filename(name)[:limit].rstrip(". ")
+
+
+def _entry_url(entry):
+    """Get a downloadable video URL out of a flat playlist entry."""
+    url = entry.get('url') or ''
+    if url.startswith('http'):
+        return url
+    video_id = entry.get('id') or url
+    return f"https://www.youtube.com/watch?v={video_id}" if video_id else None
+
+
+def _output_exists(folder_path, base, ext):
+    """True if the finished lecture file is already in the folder.
+    Matches base.ext, or base plus any single plain extension (e.g. .webm when no mp4 stream existed).
+    Leftovers like base.f399.mp4 or base.mp4.part contain extra dots, so they don't match."""
+    if os.path.exists(os.path.join(folder_path, f"{base}.{ext}")):
+        return True
+    try:
+        names = os.listdir(folder_path)
+    except OSError:
+        return False
+    pattern = re.compile(re.escape(base) + r"\.[A-Za-z0-9]+")
+    return any(pattern.fullmatch(name) for name in names)
+
+
+def _is_bot_check(error):
+    """The 'confirm you're not a bot' block hits every video, so it should stop the whole run."""
+    return 'not a bot' in str(error).lower()
+
+
+def _is_rate_limited(error):
+    return _http_status(error) == 429 or 'http error 429' in str(error).lower()
+
+
+def playlist_converter(prefill_url=None):
+    """The playlist screen: paste a link, load the list, pick videos, download."""
+    global pl_frame, pl_select_frame, pl_url_entry, pl_load_button, pl_back_button, pl_status_label
+    hide_frames()
+    pl_select_frame = None
+    pl_frame = Frame(r, bg="white")
+    pl_frame.grid(padx=20, pady=20, sticky="nsew")
+
+    l = Label(pl_frame, text='Enter the playlist link', font=("Arial", 16, "bold"), bg="white", fg="black")
+    pl_url_entry = Entry(pl_frame, width=40, font=("Arial", 14))
+    pl_load_button = Button(pl_frame, text='Load playlist', padx=40, pady=12, fg='white', bg='#4285F4',
+                            font=("Arial", 14, "bold"), command=playlist_load)
+    pl_back_button = Button(pl_frame, text='back', padx=40, pady=12, bg='#6d7985', fg='white', command=firstfunction)
+    pl_status_label = Label(pl_frame, text='', font=("Arial", 12), bg="white", fg="#555555",
+                            wraplength=460, justify=LEFT)
+
+    l.grid(row=0, column=0, pady=(0, 10), sticky="w")
+    pl_url_entry.grid(row=1, column=0, pady=(0, 10), sticky="ew")
+    pl_load_button.grid(row=2, column=0, pady=(0, 10), sticky="ew")
+    pl_status_label.grid(row=3, column=0, sticky="w")
+    # row 4 is used by the video list once a playlist is loaded
+    pl_back_button.grid(row=5, column=0, pady=(10, 0), sticky="ew")
+
+    if prefill_url:
+        pl_url_entry.insert(0, prefill_url)
+        playlist_load()
+
+
+def playlist_load():
+    link = pl_url_entry.get().strip()
+    if not link:
+        pl_status_label.config(text='Please enter a URL.', fg='#d9534f')
+        return
+    if not (link.startswith('http://') or link.startswith('https://')):
+        pl_status_label.config(text="That doesn't look like a valid URL (must start with http:// or https://).",
+                               fg='#d9534f')
+        return
+    pl_load_button.config(state=DISABLED)
+    pl_status_label.config(text='Loading playlist...', fg='#555555')
+    threading.Thread(target=_playlist_load_worker, args=(link,), daemon=True).start()
+
+
+def _playlist_load_worker(link):
+    """Background thread: list the playlist's videos without downloading anything."""
+    opts = {
+        **common_opts(),
+        'extract_flat': 'in_playlist',
+        'skip_download': True,
+        'quiet': True,
+        'noplaylist': False,
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(link, download=False)
+    except DownloadError as e:
+        if is_auth_error(e):
+            r.after(0, auth_required_screen, link, '', 'playlist', None, lambda: playlist_converter(link))
+        else:
+            print(f"Error loading playlist: {e}")
+            r.after(0, _playlist_load_failed, str(e)[:300])
+        return
+    except Exception as e:
+        print(f"Error loading playlist: {e}")
+        r.after(0, _playlist_load_failed, str(e)[:300])
+        return
+
+    raw_entries = info.get('entries') if info else None
+    entries = [e for e in raw_entries if e] if raw_entries is not None else []
+    lectures = []
+    for position, entry in enumerate(entries, start=1):
+        url = _entry_url(entry)
+        if url:
+            lectures.append((position, entry.get('title') or f"Video {position}", url))
+
+    if not lectures:
+        r.after(0, _playlist_load_failed,
+                "No playlist found at that link. For a single video, use the MP4 or MP3 screen.")
+        return
+    r.after(0, _playlist_loaded, info.get('title') or 'Playlist', lectures)
+
+
+def _playlist_load_failed(message):
+    pl_load_button.config(state=NORMAL)
+    pl_status_label.config(text=message, fg='#d9534f')
+
+
+def _playlist_loaded(title, lectures):
+    """Main thread: show the video list with the download options."""
+    global pl_title, pl_entries, pl_select_frame, pl_listbox, pl_type_var, pl_quality_var
+    global pl_download_button, pl_cancel_button, pl_overall_label, pl_progress, pl_percent_label
+    pl_title = title
+    pl_entries = lectures
+    pl_load_button.config(state=NORMAL)
+    pl_status_label.config(text='', fg='#555555')
+
+    if pl_select_frame is not None:
+        pl_select_frame.destroy()
+    pl_select_frame = Frame(pl_frame, bg="white")
+    pl_select_frame.grid(row=4, column=0, sticky="nsew", pady=(10, 0))
+
+    heading = Label(pl_select_frame, text=f"{title}  ({len(lectures)} videos)", font=("Arial", 13, "bold"),
+                    bg="white", fg="black", wraplength=460, justify=LEFT)
+    heading.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
+
+    list_frame = Frame(pl_select_frame, bg="white")
+    list_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
+    scrollbar = Scrollbar(list_frame, orient=VERTICAL)
+    pl_listbox = Listbox(list_frame, selectmode=EXTENDED, exportselection=False, height=10, width=60,
+                         font=("Arial", 11), yscrollcommand=scrollbar.set)
+    scrollbar.config(command=pl_listbox.yview)
+    pl_listbox.pack(side=LEFT, fill=BOTH, expand=True)
+    scrollbar.pack(side=RIGHT, fill=Y)
+    for position, lecture_title, _url in lectures:
+        pl_listbox.insert(END, f"{position:03d}  {lecture_title}")
+    pl_listbox.select_set(0, END)
+
+    select_all = Button(pl_select_frame, text='Select all', command=lambda: pl_listbox.select_set(0, END))
+    select_none = Button(pl_select_frame, text='Select none', command=lambda: pl_listbox.select_clear(0, END))
+    select_all.grid(row=2, column=0, pady=(5, 0), sticky="w")
+    select_none.grid(row=2, column=1, pady=(5, 0), sticky="w")
+
+    pl_type_var = StringVar(value='mp4')
+    type_frame = Frame(pl_select_frame, bg="white")
+    Radiobutton(type_frame, text='MP4 video', variable=pl_type_var, value='mp4', bg="white",
+                font=("Arial", 12)).pack(side=LEFT, padx=(0, 15))
+    Radiobutton(type_frame, text='MP3 audio', variable=pl_type_var, value='mp3', bg="white",
+                font=("Arial", 12)).pack(side=LEFT)
+    type_frame.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+    quality_label = Label(pl_select_frame, text='Video quality (MP4 only)', font=("Arial", 12), bg="white")
+    pl_quality_var = StringVar(value='720p')
+    quality_menu = OptionMenu(pl_select_frame, pl_quality_var, *QUALITY_OPTIONS.keys())
+    quality_menu.config(font=("Arial", 12), width=15)
+    quality_label.grid(row=4, column=0, sticky="w", pady=(10, 0))
+    quality_menu.grid(row=4, column=1, sticky="w", pady=(10, 0))
+
+    pl_download_button = Button(pl_select_frame, text='Download selected', padx=40, pady=12, fg='white',
+                                bg='#2E8B57', font=("Arial", 14, "bold"), command=playlist_download)
+    pl_download_button.grid(row=5, column=0, columnspan=2, pady=(10, 0), sticky="ew")
+
+    # Progress widgets: created now, shown when the download starts
+    pl_overall_label = Label(pl_select_frame, text='', font=("Arial", 12), bg="white", fg="#555555",
+                             wraplength=460, justify=LEFT)
+    pl_progress = ttk.Progressbar(pl_select_frame, orient=HORIZONTAL, length=300, mode='determinate')
+    pl_percent_label = Label(pl_select_frame, text="0.0%", font=("Arial", 12, "bold"), bg="white", fg="#4285F4")
+    pl_cancel_button = Button(pl_select_frame, text='Cancel', padx=40, pady=10, fg='white', bg='#d9534f',
+                              font=("Arial", 12, "bold"), command=playlist_cancel)
+
+
+def playlist_download():
+    picked = pl_listbox.curselection()
+    if not picked:
+        pl_status_label.config(text='Select at least one video.', fg='#d9534f')
+        return
+    if not ensure_ffmpeg():
+        pl_status_label.config(text="FFmpeg is required. Click Download again to locate it.", fg='#d9534f')
+        return
+    try:
+        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    except OSError as e:
+        pl_status_label.config(text=f"Couldn't create the downloads folder:\n{DOWNLOAD_DIR}\n{e}", fg='#d9534f')
+        return
+
+    chosen = [pl_entries[i] for i in picked]
+    file_type = pl_type_var.get()
+    quality_label = pl_quality_var.get()
+    folder = _short_name(pl_title, MAX_FOLDER_NAME_LEN) or 'Playlist'
+    link = pl_url_entry.get().strip()
+
+    pl_status_label.config(text='', fg='#555555')
+    pl_download_button.config(state=DISABLED)
+    pl_load_button.config(state=DISABLED)
+    pl_listbox.config(state=DISABLED)
+    pl_back_button.grid_remove()
+
+    pl_overall_label.grid(row=6, column=0, columnspan=2, pady=(10, 0), sticky="w")
+    pl_progress.grid(row=7, column=0, columnspan=2, pady=(5, 5), sticky="ew")
+    pl_percent_label.grid(row=8, column=0, columnspan=2, sticky="w")
+    pl_cancel_button.grid(row=9, column=0, columnspan=2, pady=(10, 0), sticky="ew")
+    pl_progress['value'] = 0
+
+    pl_cancel_event.clear()
+    threading.Thread(
+        target=_playlist_download_worker,
+        args=(link, chosen, folder, file_type, quality_label),
+        daemon=True,
+    ).start()
+
+
+def playlist_cancel():
+    """Stop after aborting the video that is downloading right now."""
+    pl_cancel_event.set()
+    pl_cancel_button.config(state=DISABLED, text='Stopping...')
+
+
+def _playlist_hook(d):
+    """Progress hook for playlist downloads. Also the place where Cancel takes effect."""
+    if pl_cancel_event.is_set():
+        raise CancelledDownload('Cancelled by user')
+    if d['status'] == 'downloading':
+        total = d.get('total_bytes') or d.get('total_bytes_estimate')
+        downloaded = d.get('downloaded_bytes', 0)
+        if total and total > 0:
+            percent = min((downloaded / total) * 100, 100.0)
+            r.after(0, _playlist_set_percent, percent, f"{percent:.1f}%")
+    elif d['status'] == 'finished':
+        r.after(0, _playlist_set_percent, 100.0, "Processing and merging...")
+
+
+def _playlist_set_percent(value, text):
+    if pl_progress is not None and pl_percent_label is not None:
+        pl_progress['value'] = value
+        pl_percent_label.config(text=text)
+
+
+def _playlist_set_overall(text):
+    if pl_overall_label is not None:
+        pl_overall_label.config(text=text)
+    _playlist_set_percent(0, "0.0%")
+
+
+def _playlist_download_worker(link, chosen, folder, file_type, quality_label):
+    """Background thread: download the chosen videos one at a time.
+    Never touches widgets directly; every UI change goes through r.after(0, ...)."""
+    ext = 'mp4' if file_type == 'mp4' else 'mp3'
+    folder_path = os.path.join(DOWNLOAD_DIR, folder)
+    result = {'done': 0, 'skipped': 0, 'failed': [], 'signin_needed': 0, 'stopped': None, 'folder': folder_path}
+
+    try:
+        os.makedirs(folder_path, exist_ok=True)
+    except OSError as e:
+        result['stopped'] = 'folder_error'
+        result['error'] = str(e)
+        r.after(0, _playlist_finished, result, link)
+        return
+
+    base_opts = {
+        **common_opts(),
+        'noplaylist': True,
+        'retries': 15,
+        'fragment_retries': 15,
+        # Wait 1s, 2s, 4s... between retries instead of hammering YouTube (a cause of HTTP 429)
+        'retry_sleep_functions': {'http': lambda n: min(2 ** n, 30), 'fragment': lambda n: min(2 ** n, 30)},
+        'progress_hooks': [_playlist_hook],
+    }
+    if ext == 'mp4':
+        base_opts.update({
+            'format': build_mp4_format(quality_label),
+            'merge_output_format': 'mp4',
+            'http_chunk_size': 10 * 1024 * 1024,
+            'concurrent_fragment_downloads': 3,
+            'socket_timeout': 10,
+        })
+    else:
+        base_opts.update({
+            'format': 'bestaudio/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+        })
+
+    total = len(chosen)
+    for n, (position, title, url) in enumerate(chosen, start=1):
+        if pl_cancel_event.is_set():
+            result['stopped'] = 'cancelled'
+            break
+
+        base = f"{position:03d} - {_short_name(title, MAX_LECTURE_NAME_LEN) or 'lecture'}"
+        r.after(0, _playlist_set_overall, f"Lecture {n} of {total}: {title}")
+
+        if _output_exists(folder_path, base, ext):
+            result['skipped'] += 1          # already downloaded in an earlier run
+            continue
+
+        opts = {**base_opts, 'outtmpl': os.path.join(folder_path, f"{base}.%(ext)s")}
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+            if _output_exists(folder_path, base, ext):
+                result['done'] += 1
+            else:
+                result['failed'].append(title)
+        except Exception as e:
+            if pl_cancel_event.is_set():
+                result['stopped'] = 'cancelled'
+                break
+            if isinstance(e, DownloadError) and _is_rate_limited(e):
+                result['stopped'] = 'ratelimit'
+                break
+            if isinstance(e, DownloadError) and _is_bot_check(e):
+                result['stopped'] = 'signin'
+                break
+            print(f"Error downloading '{title}': {e}")
+            result['failed'].append(title)
+            if isinstance(e, DownloadError) and is_auth_error(e):
+                result['signin_needed'] += 1    # e.g. a private or members-only video: skip it, carry on
+
+        # Short pause between videos; returns early if the user clicks Cancel
+        if n < total and pl_cancel_event.wait(random.uniform(*PLAYLIST_PAUSE_RANGE)):
+            result['stopped'] = 'cancelled'
+            break
+
+    r.after(0, _playlist_finished, result, link)
+
+
+def _playlist_finished(result, link):
+    """Main thread: summary screen once the run ends (finished, stopped or failed)."""
+    hide_frames()
+    frame = Frame(r, bg="white")
+    frame.grid(padx=20, pady=20, sticky="nsew")
+
+    stopped = result['stopped']
+    if stopped == 'cancelled':
+        heading = 'STOPPED'
+    elif stopped == 'ratelimit':
+        heading = 'PAUSED: YOUTUBE IS RATE-LIMITING'
+    elif stopped == 'signin':
+        heading = 'SIGN-IN NEEDED'
+    elif stopped == 'folder_error':
+        heading = 'FAILED'
+    elif result['failed']:
+        heading = 'FINISHED WITH ERRORS'
+    else:
+        heading = 'SUCCESSFULLY DOWNLOADED'
+
+    lines = [f"Downloaded: {result['done']}",
+             f"Already downloaded (skipped): {result['skipped']}",
+             f"Failed: {len(result['failed'])}"]
+    if stopped == 'folder_error':
+        lines = [f"Couldn't create the playlist folder:\n{result['folder']}\n{result.get('error', '')}"]
+    elif stopped == 'cancelled':
+        lines.append("Run the same playlist again to continue. Finished videos are skipped.")
+    elif stopped == 'ratelimit':
+        lines.append("YouTube is limiting your connection. Wait a while, then run the same playlist again. "
+                     "Finished videos are skipped. (Cookies don't fix rate limiting.)")
+    elif stopped == 'signin':
+        lines.append("YouTube is asking for a signed-in session (bot check). "
+                     "Add a cookies file, then load the playlist and download again. Finished videos are skipped.")
+    elif result['signin_needed']:
+        lines.append(f"{result['signin_needed']} failed video(s) look private, members-only or age-restricted. "
+                     "A cookies file from an account with access may help.")
+
+    if result['failed']:
+        shown = result['failed'][:5]
+        lines.append("Failed videos:\n" + "\n".join(f"  - {t}" for t in shown)
+                     + (f"\n  ...and {len(result['failed']) - 5} more" if len(result['failed']) > 5 else ""))
+
+    title_label = Label(frame, text=heading, font=("Arial", 16, "bold"), bg="white", fg="black")
+    body = Label(frame, text="\n".join(lines), font=("Arial", 11), bg="white", fg="#333333",
+                 wraplength=460, justify=LEFT)
+    path_label = Label(frame, text=f"Saved in:\n{result['folder']}", font=("Arial", 10), bg="white",
+                       fg="#555555", justify=LEFT, wraplength=460)
+    title_label.grid(row=0, column=0, pady=10, sticky="w")
+    body.grid(row=1, column=0, pady=(0, 10), sticky="w")
+    path_label.grid(row=2, column=0, pady=(0, 10), sticky="w")
+
+    row = 3
+    if stopped != 'folder_error':
+        open_button = Button(frame, text='open playlist folder', padx=40, pady=12, fg='white', bg='#5cb85c',
+                             font=("Arial", 12, "bold"), command=lambda: open_folder(result['folder']))
+        open_button.grid(row=row, column=0, pady=(0, 10), sticky="ew")
+        row += 1
+    if stopped == 'signin' or result['signin_needed']:
+        cookies_button = Button(frame, text='add cookies file', padx=40, pady=12, fg='white', bg='#f0ad4e',
+                                font=("Arial", 12, "bold"),
+                                command=lambda: auth_required_screen(link, '', 'playlist', None,
+                                                                     lambda: playlist_converter(link)))
+        cookies_button.grid(row=row, column=0, pady=(0, 10), sticky="ew")
+        row += 1
+    back_button = Button(frame, text='back to main menu', padx=40, pady=15, bg='#6d7985', fg='white',
+                         command=firstfunction)
+    back_button.grid(row=row, column=0, pady=10, sticky="ew")
 
 
 # --- SUCCESS/FAIL SCREENS ---
